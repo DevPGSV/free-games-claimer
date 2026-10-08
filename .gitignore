@@ -3,3 +3,4 @@ data/
 *.env
 megalinter-reports/
 .playwright-mcp/
+volumes/
