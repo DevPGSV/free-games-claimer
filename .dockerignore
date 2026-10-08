@@ -14,3 +14,6 @@ megalinter-reports/
 **Dockerfile**
 .dockerignore
 
+# Persistent container data
+volumes/
+

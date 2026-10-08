@@ -12,7 +12,7 @@ console.log(datetime(), 'started checking gog');
 
 const db = await jsonDb('gog.json', {});
 
-if (cfg.width < 1280) { // otherwise 'Sign in' and #menuUsername are hidden (but attached to DOM), see https://github.com/vogler/free-games-claimer/issues/335
+if (cfg.width < 1280) { // GOG's desktop navigation is hidden at narrower widths; see https://github.com/vogler/free-games-claimer/issues/335
   console.error(`Window width is set to ${cfg.width} but needs to be at least 1280 for GOG!`);
   process.exit(1);
 }
@@ -47,12 +47,28 @@ try {
 
   await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // default 'load' takes forever
 
-  // page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll').catch(_ => { }); // does not work reliably, solved by setting CookieConsent above
-  const signIn = page.locator('a:has-text("Sign in")').first();
-  // TODO for the below signIn.waitFor(), patchright failed most of the time with: locator.waitFor: JSHandles can be evaluated only in the context they were created!
-  // await Promise.any([signIn.waitFor(), page.waitForSelector('#menuUsername')]);
-  const username = page.locator('#menuUsername').first();
-  while (await signIn.isVisible() && !await username.isVisible()) {
+  // Check authentication directly instead of relying on GOG's changing menu markup.
+  // context.request shares cookies with the browser's persistent context.
+  const getAccount = async () => {
+    const response = await context.request.get('https://www.gog.com/userData.json');
+    if (!response.ok()) throw new Error(`GOG userData.json returned HTTP ${response.status()}`);
+    const account = await response.json();
+    if (typeof account.isLoggedIn !== 'boolean') throw new Error('Invalid GOG userData.json response');
+    return account;
+  };
+  const waitForLogin = async () => {
+    const deadline = Date.now() + cfg.login_timeout;
+    do {
+      const account = await getAccount();
+      if (account.isLoggedIn && account.username) return account;
+      await page.waitForTimeout(2000);
+    } while (Date.now() < deadline);
+    throw new Error('GOG login timed out');
+  };
+  const signIn = page.locator('nav.menu-v3 button.menu-v3__top-bar-anonymous-only[gog-menu-v3-auth-action="login"]');
+  let account = await getAccount();
+
+  while (!account.isLoggedIn) {
     console.error('Not signed!');
     if (cfg.nowait) process.exit(1);
     await signIn.click();
@@ -90,7 +106,6 @@ try {
         notify('gog: got captcha during login. Please check.');
         // TODO solve reCAPTCHA?
       }).catch(_ => { });
-      await page.waitForSelector('#menuUsername');
     } else {
       console.log('Waiting for you to login in the browser.');
       await notify('gog: no longer signed in and not enough options set for automatic login.');
@@ -100,10 +115,11 @@ try {
         process.exit(1);
       }
     }
-    await page.waitForSelector('#menuUsername');
+    account = await waitForLogin();
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
   }
-  user = await page.locator('#menuUsername').first().textContent(); // innerText is uppercase due to styling!
+  user = account.username;
+  if (!user) throw new Error('GOG returned no username for the signed-in account');
   console.log(`Signed in as ${user}`);
   db.data[user] ||= {};
 
